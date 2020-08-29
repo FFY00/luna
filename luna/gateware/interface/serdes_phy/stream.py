@@ -7,12 +7,13 @@
 #
 # Code based on ``litex`` and ``usb3_pipe``.
 # SPDX-License-Identifier: BSD-3-Clause
-""" SerDes interfacing. """
+""" Compatibility layer providing LiteX streams. Temporary. """
 
 import math
 
 from nmigen.compat import *
 from nmigen.compat.genlib import fifo
+
 from nmigen.lib.cdc import FFSynchronizer, PulseSynchronizer
 
 from .compat import xdir
@@ -22,12 +23,13 @@ from .compat import xdir
 # Endpoint -----------------------------------------------------------------------------------------
 
 (DIR_SINK, DIR_SOURCE) = range(2)
+(DIR_NONE, DIR_P_TO_C, DIR_C_TO_P) = range(3)
 
 def _make_m2s(layout):
     r = []
     for f in layout:
         if isinstance(f[1], (int, tuple)):
-            r.append((f[0], f[1], DIR_M_TO_S))
+            r.append((f[0], f[1], DIR_C_TO_P))
         else:
             r.append((f[0], _make_m2s(f[1])))
     return r
@@ -56,7 +58,7 @@ class EndpointDescription:
 
         full_layout = [
             ("valid",   1, DIR_M_TO_S),
-            ("ready",   1, DIR_S_TO_M),
+            ("ready",   1, DIR_P_TO_C),
             ("first",   1, DIR_M_TO_S),
             ("last",    1, DIR_M_TO_S),
             ("payload", _make_m2s(self.payload_layout)),
@@ -557,7 +559,7 @@ class Gearbox(Module):
 # Monitor ------------------------------------------------------------------------------------------
 
 class Monitor(Module):
-    def __init__(self, endpoint, count_width=32, clock_domain="sys",
+    def __init__(self, endpoint, count_width=32, clock_domain="sync",
         with_tokens     = False,
         with_overflows  = False,
         with_underflows = False):
@@ -575,12 +577,12 @@ class Monitor(Module):
 
         reset = Signal()
         latch = Signal()
-        if clock_domain == "sys":
+        if clock_domain == "sync":
             self.comb += reset.eq(self.reset.re)
             self.comb += latch.eq(self.latch.re)
         else:
-            reset_ps = PulseSynchronizer("sys", clock_domain)
-            latch_ps = PulseSynchronizer("sys", clock_domain)
+            reset_ps = PulseSynchronizer("sync", clock_domain)
+            latch_ps = PulseSynchronizer("sync", clock_domain)
             self.submodules += reset_ps, latch_ps
             self.comb += reset_ps.i.eq(self.reset.re)
             self.comb += reset.eq(reset_ps.o)

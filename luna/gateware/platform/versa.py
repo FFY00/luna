@@ -4,28 +4,26 @@
 # Copyright (c) 2020 Great Scott Gadgets <info@greatscottgadgets.com>
 # SPDX-License-Identifier: BSD-3-Clause
 
-""" ecpix5 platform definitions.
+""" ECP5 Versa platform definitions.
 
 This is a non-core platform. To use it, you'll need to set your LUNA_PLATFORM variable:
 
-    > export LUNA_PLATFORM="luna.gateware.platform.ecpix5:ECPIX5_45F_Platform"
-    > export LUNA_PLATFORM="luna.gateware.platform.ecpix5:ECPIX5_85F_Platform"
+    > export LUNA_PLATFORM="luna.gateware.platform.versa:ECP5Versa_5G_Platform"
 """
 
 from nmigen import *
 from nmigen.build import *
 from nmigen.vendor.lattice_ecp5 import LatticeECP5Platform
 
-from nmigen_boards.ecpix5 import ECPIX545Platform as _ECPIX545Platform
-from nmigen_boards.ecpix5 import ECPIX585Platform as _ECPIX585Platform
+from nmigen_boards.versa_ecp5_5g import VersaECP55GPlatform as _VersaECP55G
 
 from .core import LUNAPlatform
 
-__all__ = ["ECPIX5_45F_Platform", "ECPIX5_85F_Platform"]
+__all__ = ["ECP5Versa_5G_Platform"]
 
 
-class ECPIX5DomainGenerator(Elaboratable):
-    """ Clock generator for ECPIX5 boards. """
+class VersaDomainGenerator(Elaboratable):
+    """ Clock generator for ECP5 Versa boards. """
 
     def __init__(self, *, clock_frequencies=None, clock_signal_name=None):
         pass
@@ -34,7 +32,6 @@ class ECPIX5DomainGenerator(Elaboratable):
         m = Module()
 
         # Create our domains.
-        m.domains.ss     = ClockDomain()
         m.domains.sync   = ClockDomain()
         m.domains.usb    = ClockDomain()
         m.domains.fast   = ClockDomain()
@@ -81,15 +78,15 @@ class ECPIX5DomainGenerator(Elaboratable):
                 p_OUTDIVIDER_MUXD="DIVD",
                 p_CLKOS3_ENABLE="DISABLED",
                 p_OUTDIVIDER_MUXC="DIVC",
-                p_CLKOS2_ENABLE="ENABLED",
+                p_CLKOS2_ENABLE="DISABLED",
                 p_OUTDIVIDER_MUXB="DIVB",
                 p_CLKOS_ENABLE="ENABLED",
                 p_OUTDIVIDER_MUXA="DIVA",
                 p_CLKOP_ENABLE="ENABLED",
                 p_CLKOS3_DIV=1,
-                p_CLKOS2_DIV=5,
-                p_CLKOS_DIV=8,
-                p_CLKOP_DIV=10,
+                p_CLKOS2_DIV=3,
+                p_CLKOS_DIV=3,
+                p_CLKOP_DIV=6,
                 p_CLKFB_DIV=1,
                 p_CLKI_DIV=1,
                 p_FEEDBK_PATH="CLKOP",
@@ -124,9 +121,6 @@ class ECPIX5DomainGenerator(Elaboratable):
 
         # Control our resets.
         m.d.comb += [
-            ClockSignal("ss")      .eq(ClockSignal("sync")),
-
-            ResetSignal("ss")      .eq(~locked),
             ResetSignal("sync")    .eq(~locked),
             ResetSignal("usb")     .eq(~locked),
             ResetSignal("fast")    .eq(~locked),
@@ -136,7 +130,13 @@ class ECPIX5DomainGenerator(Elaboratable):
 
 
 
-class _ECPIXExtensions:
+
+
+class ECP5Versa_5G_Platform(_VersaECP55G, LUNAPlatform):
+    name                   = "ECP5 Versa 5G"
+
+    clock_domain_generator = VersaDomainGenerator
+    default_usb_connection = None
 
     additional_resources = [
         Resource("serdes", 1,
@@ -144,27 +144,6 @@ class _ECPIXExtensions:
             Subsignal("tx", DiffPairs("W4", "W5"))
         )
     ]
-
-
-
-class ECPIX5_45F_Platform(_ECPIX545Platform, _ECPIXExtensions, LUNAPlatform):
-    name                   = "ECPIX-5 (45F)"
-
-    clock_domain_generator = ECPIX5DomainGenerator
-    default_usb_connection = "ulpi"
-
-    # Create our semantic aliases.
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.add_resources(self.additional_resources)
-
-
-
-class ECPIX5_85F_Platform(_ECPIX585Platform, _ECPIXExtensions, LUNAPlatform):
-    name                   = "ECPIX-5 (85F)"
-
-    clock_domain_generator = ECPIX5DomainGenerator
-    default_usb_connection = "ulpi"
 
     # Create our semantic aliases.
     def __init__(self, *args, **kwargs):

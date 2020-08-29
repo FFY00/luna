@@ -17,7 +17,7 @@ from nmigen.lib.cdc import FFSynchronizer, PulseSynchronizer, ResetSynchronizer
 from ..         import stream
 from ..prbs     import PRBSTX, PRBSRX
 from ..encoding import Encoder, Decoder
-from ..compat   import WaitTimer
+from ..serdes   import TXDatapath, RXDatapath, RXErrorSubstitution, SerdesRXInit
 
 
 # SerDesECP5PLL ------------------------------------------------------------------------------------
@@ -190,72 +190,8 @@ class SerDesECP5SCIReconfig(Module):
 
 # SerdesRXInit -------------------------------------------------------------------------------------
 
-class SerdesRXInit(Module):
-    def __init__(self, tx_lol, rx_lol, rx_los, rx_lsm):
-        self.rrst        = Signal()
-        self.lane_rx_rst = Signal()
 
-        # # #
-
-        _tx_lol      = Signal()
-        _rx_lol      = Signal()
-        _rx_los      = Signal()
-        _rx_lsm      = Signal()
-        _rx_lsm_seen = Signal()
-        self.specials += [
-            FFSynchronizer(tx_lol, _tx_lol),
-            FFSynchronizer(rx_lol, _rx_lol),
-            FFSynchronizer(rx_los, _rx_los),
-            FFSynchronizer(rx_lsm, _rx_lsm),
-        ]
-
-        timer = WaitTimer(int(4e5))
-        self.submodules += timer
-
-        self.submodules.fsm = fsm = FSM(reset_state="IDLE")
-        fsm.act("IDLE",
-            self.lane_rx_rst.eq(1),
-            If(~_tx_lol,
-                NextState("RESET-ALL")
-            )
-        )
-        fsm.act("RESET-ALL",
-            self.rrst.eq(1),
-            self.lane_rx_rst.eq(1),
-            NextState("RESET-PCS")
-        )
-        fsm.act("RESET-PCS",
-            self.lane_rx_rst.eq(1),
-            timer.wait.eq(~_rx_lol & ~_rx_los),
-            If(timer.done,
-                timer.wait.eq(0),
-                NextValue(_rx_lsm_seen, 0),
-                NextState("CHECK-LSM")
-            )
-        )
-        fsm.act("CHECK-LSM",
-            NextValue(_rx_lsm_seen, _rx_lsm_seen | _rx_lsm),
-            timer.wait.eq(1),
-            If(_rx_lsm_seen & ~_rx_lsm,
-                NextState("IDLE")
-            ),
-            If(timer.done,
-                If(_rx_lsm,
-                    NextState("READY")
-                ).Else(
-                    NextState("IDLE")
-                )
-            )
-        )
-        fsm.act("READY",
-            If(_tx_lol | _rx_lol | _rx_los,
-                NextState("IDLE")
-            )
-        )
-
-# SerDesECP5 ---------------------------------------------------------------------------------------
-
-class SerDesECP5(Module):
+class ECP5SerDes(Module):
     def __init__(self, pll, tx_pads, rx_pads, dual=0, channel=0, data_width=20,
         tx_polarity=0, rx_polarity=0):
         assert (data_width == 20)
@@ -331,19 +267,19 @@ class SerDesECP5(Module):
         self.specials += [
             FFSynchronizer(self.rx_align, rx_align, o_domain="rx"),
             FFSynchronizer(self.rx_prbs_config, rx_prbs_config, o_domain="rx"),
-            FFSynchronizer(rx_los, self.rx_idle, o_domain="sys"),
-            FFSynchronizer(rx_prbs_errors, self.rx_prbs_errors, o_domain="sys"), # FIXME
+            FFSynchronizer(rx_los, self.rx_idle, o_domain="sync"),
+            FFSynchronizer(rx_prbs_errors, self.rx_prbs_errors, o_domain="sync"), # FIXME
         ]
 
         # Clocking ---------------------------------------------------------------------------------
         self.clock_domains.cd_tx = ClockDomain()
         self.comb += self.cd_tx.clk.eq(self.txoutclk)
-        self.specials += ResetSynchronizer(ResetSignal("sys"), domain="tx")
+        self.specials += ResetSynchronizer(ResetSignal("sync"), domain="tx")
         self.specials += FFSynchronizer(~self.cd_tx.rst, self.tx_ready)
 
         self.clock_domains.cd_rx = ClockDomain()
         self.comb += self.cd_rx.clk.eq(self.rxoutclk)
-        self.specials += ResetSynchronizer(ResetSignal("sys"), domain="rx")
+        self.specials += ResetSynchronizer(ResetSignal("sync"), domain="rx")
         self.specials += FFSynchronizer(~self.cd_rx.rst, self.rx_ready)
 
 
@@ -363,8 +299,8 @@ class SerDesECP5(Module):
             i_D_FFC_MACROPDB        = 1,
 
             # DCU — reset
-            i_D_FFC_MACRO_RST       = ResetSignal("sys"),
-            i_D_FFC_DUAL_RST        = ResetSignal("sys"),
+            i_D_FFC_MACRO_RST       = ResetSignal("sync"),
+            i_D_FFC_DUAL_RST        = ResetSignal("sync"),
 
             # DCU — clocking
             i_D_REFCLKI             = pll.refclk,
@@ -703,3 +639,84 @@ class SerDesECP5(Module):
         self.dcu0.attrs["LOC"] = "DCU{}".format(self.dual)
         self.dcu0.attrs["CHAN"] = "CH{}".format(self.channel)
         self.dcu0.attrs["BEL"] = "X42/Y71/DCU"
+
+
+
+# Lattice ECP5 USB3 Serializer/Deserializer --------------------------------------------------------
+
+class LunaECP5SerDes(Module):
+    def __init__(self, platform, sys_clk, sys_clk_freq, refclk_pads, refclk_freq, tx_pads, rx_pads, channel):
+        self.sink   = stream.Endpoint([("data", 32), ("ctrl", 4)])
+        self.source = stream.Endpoint([("data", 32), ("ctrl", 4)])
+
+        self.enable = Signal(reset=1) # i
+        self.ready  = Signal()        # o
+
+        self.tx_polarity = Signal()   # i
+        self.tx_idle     = Signal()   # i
+        self.tx_pattern  = Signal(20) # i
+
+        self.rx_polarity = Signal()   # i
+        self.rx_idle     = Signal()   # o
+        self.rx_align    = Signal()   # i
+
+        # # #
+
+
+        # Clock ------------------------------------------------------------------------------------
+        if isinstance(refclk_pads, (Signal, ClockSignal)):
+            refclk = refclk_pads
+        else:
+            refclk = Signal()
+            self.specials.extref0 = Instance("EXTREFB",
+                i_REFCLKP     = refclk_pads.p,
+                i_REFCLKN     = refclk_pads.n,
+                o_REFCLKO     = refclk,
+                p_REFCK_PWDNB = "0b1",
+                p_REFCK_RTERM = "0b1", # 100 Ohm
+            )
+            self.extref0.attr.add(("LOC", "EXTREF0"))
+
+        # PLL --------------------------------------------------------------------------------------
+        serdes_pll = SerDesECP5PLL(refclk, refclk_freq=refclk_freq, linerate=5e9)
+        self.submodules += serdes_pll
+
+
+        # Transceiver ------------------------------------------------------------------------------
+        serdes  = ECP5SerDes(serdes_pll, tx_pads, rx_pads,
+            channel     = channel,
+            data_width  = 20,
+            tx_polarity = self.tx_polarity,
+            rx_polarity = self.rx_polarity)
+        serdes.add_stream_endpoints()
+        tx_datapath     = TXDatapath("tx")
+        rx_substitution = RXErrorSubstitution(serdes, "rx")
+        rx_datapath     = RXDatapath("rx")
+        self.submodules.serdes          = serdes
+        self.submodules.tx_datapath     = tx_datapath
+        self.submodules.rx_substitution = rx_substitution
+        self.submodules.rx_datapath     = rx_datapath
+        self.comb += [
+            serdes.tx_idle.eq(self.tx_idle),
+            self.rx_idle.eq(serdes.rx_idle),
+            serdes.tx_enable.eq(self.enable),
+            serdes.rx_enable.eq(self.enable),
+            self.ready.eq(serdes.tx_ready & serdes.rx_ready),
+            serdes.rx_align.eq(self.rx_align),
+            self.sink.connect(tx_datapath.sink),
+            tx_datapath.source.connect(serdes.sink),
+            serdes.source.connect(rx_substitution.sink),
+            rx_substitution.source.connect(rx_datapath.sink),
+            rx_datapath.source.connect(self.source),
+        ]
+
+        # Override SerDes parameters/signals to allow LFPS --------------------------------------------
+        self.comb += [
+            serdes.tx_produce_pattern.eq(self.tx_pattern != 0),
+            serdes.tx_pattern.eq(self.tx_pattern)
+        ]
+
+        # Timing constraints -----------------------------------------------------------------------
+        platform.add_clock_constraint(serdes.txoutclk, 1e9/serdes.tx_clk_freq)
+        platform.add_clock_constraint(serdes.rxoutclk, 1e9/serdes.rx_clk_freq)
+        #platform.add_false_path_constraints(sys_clk, serdes.cd_tx.clk, serdes.cd_rx.clk) # FIXME

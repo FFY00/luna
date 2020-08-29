@@ -8,8 +8,6 @@
 
 from nmigen import *
 
-from nmigen_boards.ecpix5 import ECPIX585Platform
-
 from luna                         import top_level_cli
 from luna.gateware.platform       import NullPin
 
@@ -18,14 +16,11 @@ from luna.gateware.interface.serdes_phy.core          import USB3PIPE
 
 
 
-class PIPEPhyExample(Elaboratable):
+class RawSerdesExample(Elaboratable):
     """ Hardware module that demonstrates grabbing a PHY resource with gearing. """
 
     def elaborate(self, platform):
         m = Module()
-
-        sync_frequency = 125e6
-        fast_frequency = 200e6
 
         serdes_channel = 1
         serdes_io      = platform.request("serdes", serdes_channel, dir={'tx':"-", 'rx':"-"})
@@ -36,20 +31,24 @@ class PIPEPhyExample(Elaboratable):
         # Create our SerDes interface...
         m.submodules.serdes = serdes = LunaECP5SerDes(platform,
             sys_clk      = ClockSignal("sync"),
-            sys_clk_freq = sync_frequency,
+            sys_clk_freq = 125e6,
             refclk_pads  = ClockSignal("fast"),
-            refclk_freq  = fast_frequency,
+            refclk_freq  = 200e6,
             tx_pads      = serdes_io.tx,
             rx_pads      = serdes_io.rx,
             channel      = serdes_channel
         )
 
-        # ... and our PIPE PHY.
-        m.submodules.phy = phy = USB3PIPE(serdes=serdes, sys_clk_freq=sync_frequency)
+        # ... and spam a pattern out constantly.
+        m.d.comb += [
+            serdes.sink.data.eq(0xAABBCCDD),
+            serdes.tx_idle.eq(0)
+        ]
+
 
         # Return our elaborated module.
         return m
 
 
 if __name__ == "__main__":
-    top_level_cli(PIPEPhyExample)
+    top_level_cli(RawSerdesExample)
